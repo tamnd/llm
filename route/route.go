@@ -311,6 +311,26 @@ func DefaultPath() string {
 
 // Load reads a registry from disk.
 func Load(path string) (Registry, error) {
+	value, err := Read(path)
+	if err != nil {
+		return Registry{}, err
+	}
+	if err := value.Validate(); err != nil {
+		return Registry{}, fmt.Errorf("route file %s: %w", path, err)
+	}
+	return value, nil
+}
+
+// Read is Load without the validation: what the file says, whether or not it
+// is something to run.
+//
+// The two are different questions and only one of them is Load's. A run must
+// not start on a half edited fleet, and a command that shows somebody their
+// route file so they can finish editing it must not refuse to show them the
+// thing they are editing. The template Suggest writes fails Validate by
+// design, so the first thing anybody does after a routes init is exactly the
+// case Load is right to reject.
+func Read(path string) (Registry, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Registry{}, err
@@ -318,9 +338,6 @@ func Load(path string) (Registry, error) {
 	var value Registry
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return Registry{}, fmt.Errorf("decode route file %s: %w", path, err)
-	}
-	if err := value.Validate(); err != nil {
-		return Registry{}, fmt.Errorf("route file %s: %w", path, err)
 	}
 	value.sort()
 	return value, nil
