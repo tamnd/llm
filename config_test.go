@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -40,6 +41,35 @@ func TestConfigureSanitizes(t *testing.T) {
 		if App() != c.want {
 			t.Errorf("Configure(%q) gave %q, want %q", c.in, App(), c.want)
 		}
+	}
+}
+
+// One directory on every machine, because a route file written on a laptop
+// is read on a server and a person should not have to remember which of two
+// places it is in on which platform.
+func TestTheConfigDirIsDotConfigEverywhere(t *testing.T) {
+	t.Cleanup(func() { Configure(Config{}) })
+	t.Setenv("XDG_CONFIG_HOME", "")
+	Configure(Config{App: "papers"})
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory on this machine")
+	}
+	if want := filepath.Join(home, ".config", "papers"); ConfigDir() != want {
+		t.Errorf("config dir = %q, want %q", ConfigDir(), want)
+	}
+}
+
+// A machine that says where its configuration goes is obeyed.
+func TestXDGConfigHomeWins(t *testing.T) {
+	t.Cleanup(func() { Configure(Config{}) })
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	Configure(Config{App: "papers"})
+
+	if want := filepath.Join(dir, "papers"); ConfigDir() != want {
+		t.Errorf("config dir = %q, want %q", ConfigDir(), want)
 	}
 }
 

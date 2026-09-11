@@ -58,9 +58,17 @@ func App() string {
 }
 
 // ConfigDir is where the route file and the fleet state live. It is
-// ~/.config/<app> unless the caller said otherwise, and the current directory
-// if there is no home, which is a bad answer but a better one than a path
+// $XDG_CONFIG_HOME/<app>, else ~/.config/<app>, and the current directory if
+// there is no home, which is a bad answer but a better one than a path
 // beginning with an empty string.
+//
+// It is ~/.config on macOS too, which os.UserConfigDir is not: there it
+// answers ~/Library/Application Support. The platform convention loses here
+// because a fleet is not one platform. The route file names Linux boxes, it
+// is written on a laptop and read on a server, it sits beside the ssh config
+// and the other dotfiles that go with it, and a person who has to remember
+// which of two directories a file is in on which machine is a person who will
+// eventually edit the wrong one.
 func ConfigDir() string {
 	configMu.RLock()
 	dir, app := config.ConfigDir, config.App
@@ -68,11 +76,14 @@ func ConfigDir() string {
 	if dir != "" {
 		return dir
 	}
-	home, err := os.UserConfigDir()
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, app)
+	}
+	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return filepath.Join(".config", app)
 	}
-	return filepath.Join(home, app)
+	return filepath.Join(home, ".config", app)
 }
 
 // EnvName builds the environment variable for a suffix: EnvName("ROUTES") is
