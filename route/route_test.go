@@ -2,6 +2,7 @@ package route
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -216,6 +217,44 @@ func TestLoadAndWrite(t *testing.T) {
 	}
 	if _, err := Load(filepath.Join(dir, "missing.json")); err == nil {
 		t.Error("a missing file named explicitly was not an error")
+	}
+}
+
+// The template a routes init writes does not validate, on purpose, and the
+// command that shows somebody their route file so they can finish editing it
+// must not refuse to show them what they are editing.
+func TestAHalfEditedFileCanStillBeRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "routes.json")
+	if err := Suggest().Write(path); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Error("Load accepted a template with no models in it")
+	}
+	got, err := Read(path)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(got.Routes) != len(Suggest().Routes) {
+		t.Errorf("read %d routes, want %d", len(got.Routes), len(Suggest().Routes))
+	}
+}
+
+// Read still refuses what is not a route file at all. There is a difference
+// between a file somebody is in the middle of writing and a file that is not
+// one, and only the first is worth showing.
+func TestReadRefusesWhatIsNotAFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "routes.json")
+	if err := os.WriteFile(path, []byte("routes: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(path); err == nil {
+		t.Error("Read accepted something that is not JSON")
+	}
+	if _, err := Read(filepath.Join(dir, "missing.json")); err == nil {
+		t.Error("Read invented a file that is not there")
 	}
 }
 
