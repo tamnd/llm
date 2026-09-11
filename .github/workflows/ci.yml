@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+      - name: vet
+        run: go vet ./...
+
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      # The whole suite runs without a network, a subscription or a box, which
+      # is the property this step exists to keep true.
+      - name: test
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: coverage
+        run: go tool cover -func=coverage.out | tail -1
+
+      - name: build
+        run: go build ./...
