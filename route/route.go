@@ -95,6 +95,12 @@ type Route struct {
 	// invoke it. "{{MODEL}}" in an argument is replaced by Model.
 	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
+	// ImageFlag is the option that program takes a picture on, repeated once
+	// per file, as in "--image". A program that reads no pictures leaves it
+	// empty, and so does a route naming a program the library already knows
+	// the flag for. Setting Vision on an exec route whose program has no such
+	// flag is a route that will be sent pages and refuse every one.
+	ImageFlag string `json:"image_flag,omitempty"`
 
 	// Host is the ssh destination. RemotePort and LocalPort describe the
 	// tunnel: a forwarder maps LocalPort here to RemotePort there, and BaseURL
@@ -537,7 +543,7 @@ func Suggest() Registry {
 		},
 		{
 			Name: "cli", Kind: KindExec, Command: "codex", Model: "",
-			Rank: 100, Concurrency: 2, Timeout: Duration(5 * time.Minute),
+			Rank: 100, Concurrency: 2, Timeout: Duration(5 * time.Minute), Vision: true,
 			Note: "a subscription reached by running a program on this machine",
 		},
 		{
