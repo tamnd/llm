@@ -364,7 +364,10 @@ func TestAnImageIsWrittenWhereTheProgramCanOpenIt(t *testing.T) {
 
 // The pictures go in front of the argument that means "the prompt is on
 // standard input", because an option after that one is read as the prompt.
-func TestThePicturesComeBeforeTheRestOfTheCommandLine(t *testing.T) {
+// The subcommand stays first and the prompt argument stays last, which is
+// the only place the pictures can go that is neither an argument to the
+// program before it has a subcommand nor a word the CLI reads as the prompt.
+func TestThePicturesGoBetweenTheSubcommandAndThePromptArgument(t *testing.T) {
 	out := &replay{stdout: recorded}
 	runner := codexRunner(out)
 	if _, err := runner.Complete(context.Background(), llm.Request{
@@ -373,11 +376,29 @@ func TestThePicturesComeBeforeTheRestOfTheCommandLine(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if out.args[0] != "--image" {
+	if out.args[0] != "exec" {
 		t.Errorf("the command line starts %v", out.args[:min(4, len(out.args))])
 	}
 	if out.args[len(out.args)-1] != "-" {
 		t.Errorf("the command line ends %v", out.args[len(out.args)-3:])
+	}
+	if at := len(out.args) - 3; out.args[at] != "--image" {
+		t.Errorf("the picture is not where the prompt argument was: %v", out.args)
+	}
+}
+
+// A Runner that takes no arguments at all still gets its pictures.
+func TestAProgramWithNoArgumentsStillGetsItsPictures(t *testing.T) {
+	out := &replay{stdout: "the page"}
+	runner := &Runner{Bin: "reader", Model: "m", ImageFlag: "-i", Run: out.run}
+	if _, err := runner.Complete(context.Background(), llm.Request{
+		Input:  "read this",
+		Images: []llm.Image{{MediaType: "image/png", Data: []byte("a page")}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(out.args) != 2 || out.args[0] != "-i" {
+		t.Errorf("the command line is %v", out.args)
 	}
 }
 
