@@ -2,6 +2,8 @@ package exec
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -186,9 +188,13 @@ func TestCompleteRefusesWhatItCannotDo(t *testing.T) {
 		{"no program", &Runner{Name: "cli", Model: "m", Run: out.run}, llm.Request{Input: "x"}, "no program"},
 		{"no model", &Runner{Name: "cli", Bin: "codex", Run: out.run}, llm.Request{Input: "x"}, "no model"},
 		{"no question", codexRunner(out), llm.Request{Input: "   "}, "no question"},
-		// A CLI that takes an image takes a path to a file, which is a
-		// different protocol. Say so before the call, not inside it.
-		{"an image", codexRunner(out), llm.Request{Input: "x", Images: []llm.Image{{Data: []byte{1}}}}, "cannot read an image"},
+		// A Runner with no ImageFlag names a program that reads no pictures.
+		// It says so before the call rather than answering about the text
+		// alone, which is a wrong answer and not an error.
+		{"an image", &Runner{Name: "cli", Bin: "codex", Model: "m", Run: out.run},
+			llm.Request{Input: "x", Images: []llm.Image{{Data: []byte{1}}}}, "cannot read an image"},
+		{"an empty image", codexRunner(out),
+			llm.Request{Input: "x", Images: []llm.Image{{MediaType: "image/png"}}}, "no bytes in it"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := c.runner.Complete(context.Background(), c.request)
@@ -312,5 +318,123 @@ func TestBuildKeepsTheRoutesOwnArguments(t *testing.T) {
 	}
 	if runner.Timeout != DefaultTimeout {
 		t.Errorf("timeout = %s, want the default", runner.Timeout)
+	}
+}
+
+// A picture goes to the program as a file, because that is what a CLI takes.
+func TestAnImageIsWrittenWhereTheProgramCanOpenIt(t *testing.T) {
+	out := &replay{stdout: recorded}
+	var saw []string
+	runner := codexRunner(out)
+	runner.Run = func(ctx context.Context, name string, args []string, stdin string) ([]byte, []byte, error) {
+		for i, arg := range args {
+			if arg != "--image" || i+1 >= len(args) {
+				continue
+			}
+			b, err := os.ReadFile(args[i+1])
+			if err != nil {
+				t.Errorf("the picture is not where the program was told: %v", err)
+				continue
+			}
+			saw = append(saw, args[i+1]+"="+string(b))
+		}
+		return out.run(ctx, name, args, stdin)
+	}
+	_, err := runner.Complete(context.Background(), llm.Request{
+		Input:  "read these",
+		Images: []llm.Image{{MediaType: "image/png", Data: []byte("first")}, {MediaType: "image/jpeg", Data: []byte("second")}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(saw) != 2 {
+		t.Fatalf("the program was given %d pictures, want 2: %v", len(saw), saw)
+	}
+	// In the order they were asked about, because that is the order the CLI
+	// hands them to the model.
+	if !strings.HasSuffix(saw[0], "=first") || !strings.HasSuffix(saw[1], "=second") {
+		t.Errorf("the pictures came out in the wrong order: %v", saw)
+	}
+	// Named for what they hold, because a CLI works out what a file is from
+	// its name as often as from its bytes.
+	if !strings.Contains(saw[0], ".png=") || !strings.Contains(saw[1], ".jpg=") {
+		t.Errorf("the pictures are not named for what they hold: %v", saw)
+	}
+}
+
+// The pictures go in front of the argument that means "the prompt is on
+// standard input", because an option after that one is read as the prompt.
+func TestThePicturesComeBeforeTheRestOfTheCommandLine(t *testing.T) {
+	out := &replay{stdout: recorded}
+	runner := codexRunner(out)
+	if _, err := runner.Complete(context.Background(), llm.Request{
+		Input:  "read this",
+		Images: []llm.Image{{MediaType: "image/png", Data: []byte("a page")}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if out.args[0] != "--image" {
+		t.Errorf("the command line starts %v", out.args[:min(4, len(out.args))])
+	}
+	if out.args[len(out.args)-1] != "-" {
+		t.Errorf("the command line ends %v", out.args[len(out.args)-3:])
+	}
+}
+
+// Nothing is left on the disk of the machine that asked.
+func TestThePicturesAreTakenAwayAfterwards(t *testing.T) {
+	out := &replay{stdout: recorded}
+	var path string
+	runner := codexRunner(out)
+	runner.Run = func(ctx context.Context, name string, args []string, stdin string) ([]byte, []byte, error) {
+		for i, arg := range args {
+			if arg == "--image" && i+1 < len(args) {
+				path = args[i+1]
+			}
+		}
+		return out.run(ctx, name, args, stdin)
+	}
+	if _, err := runner.Complete(context.Background(), llm.Request{
+		Input:  "read this",
+		Images: []llm.Image{{MediaType: "image/png", Data: []byte("a page")}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if path == "" {
+		t.Fatal("the program was given no picture")
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+		t.Errorf("%s is still there", filepath.Dir(path))
+	}
+}
+
+// An exec route named in a route file gets the flag the program takes
+// pictures on, whether or not the file spells out the arguments.
+func TestBuildGivesACodexRouteItsEye(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		route route.Route
+		want  string
+	}{
+		{"the default arguments", route.Route{Name: "cli", Kind: route.KindExec, Command: "codex", Model: "m"}, CodexImageFlag},
+		{"arguments of its own", route.Route{Name: "cli", Kind: route.KindExec, Command: "codex", Model: "m",
+			Args: []string{"exec", "-"}}, CodexImageFlag},
+		{"a flag of its own", route.Route{Name: "cli", Kind: route.KindExec, Command: "codex", Model: "m",
+			ImageFlag: "-i"}, "-i"},
+		{"a program nobody here knows", route.Route{Name: "cli", Kind: route.KindExec, Command: "reader", Model: "m"}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			completer, err := Build(c.route, time.Minute, 1)
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			runner, ok := completer.(*Runner)
+			if !ok {
+				t.Fatalf("Build returned %T", completer)
+			}
+			if runner.ImageFlag != c.want {
+				t.Errorf("image flag = %q, want %q", runner.ImageFlag, c.want)
+			}
+		})
 	}
 }

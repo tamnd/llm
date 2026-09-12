@@ -17,7 +17,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -42,6 +44,15 @@ type Runner struct {
 	// Model. The prompt goes on standard input.
 	Args  []string
 	Model string
+	// ImageFlag is the option the program takes a picture on, repeated once
+	// per file, as in "--image". Empty for a program that reads no pictures,
+	// which is the default, because a Runner that quietly dropped an image
+	// would answer a question nobody asked.
+	//
+	// The pictures are written to temporary files and the flag and the path
+	// go in front of Args. A CLI takes a path and not bytes on standard
+	// input, and standard input is already carrying the prompt.
+	ImageFlag string
 	// Name is the route this is, for an error message.
 	Name    string
 	Timeout time.Duration
@@ -58,11 +69,9 @@ func (r *Runner) Complete(ctx context.Context, request llm.Request) (llm.Respons
 	if strings.TrimSpace(r.Bin) == "" {
 		return llm.Response{}, fmt.Errorf("exec route %s names no program", r.name())
 	}
-	if len(request.Images) > 0 {
-		// A CLI that takes an image takes a path to a file, not bytes on
-		// standard input, and that is a different protocol with a temporary
-		// file and a cleanup in it. A route that cannot must say so before the
-		// call rather than fail inside it.
+	if len(request.Images) > 0 && r.ImageFlag == "" {
+		// A route that cannot take a picture says so before the call rather
+		// than failing inside it, or worse answering about the text alone.
 		return llm.Response{}, fmt.Errorf("exec route %s cannot read an image", r.name())
 	}
 	model := strings.TrimSpace(request.Model)
@@ -92,9 +101,21 @@ func (r *Runner) Complete(ctx context.Context, request llm.Request) (llm.Respons
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	args := make([]string, len(r.Args))
-	for index, arg := range r.Args {
-		args[index] = strings.ReplaceAll(arg, "{{MODEL}}", model)
+	paths, clean, err := spill(request.Images)
+	if err != nil {
+		return llm.Response{}, fmt.Errorf("exec route %s: %w", r.name(), err)
+	}
+	defer clean()
+
+	// The pictures go in front of whatever Args says, because the last of
+	// Args is the argument that means "the prompt is on standard input" and
+	// an option after it is an option the CLI reads as the prompt.
+	args := make([]string, 0, len(r.Args)+2*len(paths))
+	for _, path := range paths {
+		args = append(args, r.ImageFlag, path)
+	}
+	for _, arg := range r.Args {
+		args = append(args, strings.ReplaceAll(arg, "{{MODEL}}", model))
 	}
 
 	started := time.Now()
@@ -121,6 +142,54 @@ func (r *Runner) Complete(ctx context.Context, request llm.Request) (llm.Respons
 	}
 	response.Elapsed = time.Since(started)
 	return response, nil
+}
+
+// spill writes the pictures where the program can open them, and returns the
+// paths and the way to take them away again.
+//
+// They go in one directory of their own so that the cleanup is one call that
+// cannot leave a file behind, and they are numbered in the order they were
+// asked about because a CLI passes them to the model in the order of the
+// flags and a page read in the wrong order is a page read wrong.
+func spill(images []llm.Image) (paths []string, clean func(), err error) {
+	clean = func() {}
+	if len(images) == 0 {
+		return nil, clean, nil
+	}
+	dir, err := os.MkdirTemp("", "llm-exec-")
+	if err != nil {
+		return nil, clean, err
+	}
+	clean = func() { os.RemoveAll(dir) }
+	for index, image := range images {
+		if len(image.Data) == 0 {
+			clean()
+			return nil, func() {}, fmt.Errorf("image %d has no bytes in it", index+1)
+		}
+		path := filepath.Join(dir, fmt.Sprintf("%03d%s", index+1, suffix(image.MediaType)))
+		if err := os.WriteFile(path, image.Data, 0o600); err != nil {
+			clean()
+			return nil, func() {}, err
+		}
+		paths = append(paths, path)
+	}
+	return paths, clean, nil
+}
+
+// suffix is the extension a media type is written under. A CLI works out what
+// a file holds from its name as often as from its bytes, and a picture with
+// no extension is a picture some of them will not send.
+func suffix(mediaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	default:
+		return ".png"
+	}
 }
 
 func (r *Runner) name() string {
@@ -166,8 +235,12 @@ func PlainText(stdout, stderr []byte) (llm.Response, error) {
 	return llm.Response{Text: text}, nil
 }
 
-// CodexBin is the CLI this package ships a parser for.
-const CodexBin = "codex"
+// CodexBin is the CLI this package ships a parser for, and CodexImageFlag is
+// the option it takes a picture on.
+const (
+	CodexBin       = "codex"
+	CodexImageFlag = "--image"
+)
 
 // Codex returns a Runner for the codex CLI on the named model.
 //
@@ -184,7 +257,10 @@ func Codex(name, model string) *Runner {
 		Bin:   CodexBin,
 		Args:  []string{"exec", "-m", "{{MODEL}}", "--json", "--skip-git-repo-check", "-s", "read-only", "-"},
 		Model: model, Name: name, Timeout: DefaultTimeout,
-		Parse: ParseCodex,
+		// codex exec takes --image once per file and reads the prompt off
+		// standard input, which is the protocol spill and Complete write to.
+		ImageFlag: CodexImageFlag,
+		Parse:     ParseCodex,
 	}
 }
 
@@ -289,14 +365,24 @@ func Build(r route.Route, timeout time.Duration, _ int) (llm.Completer, error) {
 	}
 	runner := &Runner{
 		Bin: r.Command, Args: r.Args, Model: r.Wire(), Name: r.Name, Timeout: timeout,
+		ImageFlag: r.ImageFlag,
 	}
 	if len(runner.Args) == 0 && r.Command == CodexBin {
 		codex := Codex(r.Name, r.Wire())
 		codex.Timeout = timeout
+		if r.ImageFlag != "" {
+			codex.ImageFlag = r.ImageFlag
+		}
 		return codex, nil
 	}
 	if r.Command == CodexBin {
 		runner.Parse = ParseCodex
+		// A route that spells out its own arguments still gets the flag this
+		// CLI takes pictures on, because the flag is a property of the
+		// program and not of the arguments somebody chose.
+		if runner.ImageFlag == "" {
+			runner.ImageFlag = CodexImageFlag
+		}
 	}
 	return runner, nil
 }
