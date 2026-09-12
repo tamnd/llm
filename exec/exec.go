@@ -50,8 +50,8 @@ type Runner struct {
 	// would answer a question nobody asked.
 	//
 	// The pictures are written to temporary files and the flag and the path
-	// go in front of Args. A CLI takes a path and not bytes on standard
-	// input, and standard input is already carrying the prompt.
+	// go in front of the last of Args. A CLI takes a path and not bytes on
+	// standard input, and standard input is already carrying the prompt.
 	ImageFlag string
 	// Name is the route this is, for an error message.
 	Name    string
@@ -107,15 +107,27 @@ func (r *Runner) Complete(ctx context.Context, request llm.Request) (llm.Respons
 	}
 	defer clean()
 
-	// The pictures go in front of whatever Args says, because the last of
-	// Args is the argument that means "the prompt is on standard input" and
-	// an option after it is an option the CLI reads as the prompt.
+	// The pictures go in front of the last of Args and nowhere else. The
+	// last of Args is the argument that means "the prompt is on standard
+	// input", and an option written after it is an option the CLI reads as
+	// the prompt, which is what "No prompt provided via stdin" turned out to
+	// mean. In front of the whole of Args is no better: the first of Args is
+	// the subcommand, and codex answered an option written before "exec"
+	// with "unexpected argument '--json' found".
 	args := make([]string, 0, len(r.Args)+2*len(paths))
-	for _, path := range paths {
-		args = append(args, r.ImageFlag, path)
-	}
-	for _, arg := range r.Args {
+	for i, arg := range r.Args {
+		if i == len(r.Args)-1 {
+			for _, path := range paths {
+				args = append(args, r.ImageFlag, path)
+			}
+		}
 		args = append(args, strings.ReplaceAll(arg, "{{MODEL}}", model))
+	}
+	// A Runner with no arguments at all still gets its pictures.
+	if len(r.Args) == 0 {
+		for _, path := range paths {
+			args = append(args, r.ImageFlag, path)
+		}
 	}
 
 	started := time.Now()
