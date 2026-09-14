@@ -101,6 +101,23 @@ func NewVisionPool(registry Registry) *Pool {
 	return pool
 }
 
+// NewJobPool builds a pool of the routes that will do a named job, which is
+// the routes that name it and the routes that name none. See Route.Jobs.
+//
+// Same reasoning as NewVisionPool: a caller whose fleet has nothing that
+// will take this job should hear so before the run rather than after it,
+// and Empty is what says so.
+func NewJobPool(registry Registry, job string) *Pool {
+	pool := &Pool{}
+	for _, value := range registry.Enabled() {
+		if !value.Answers() || !value.Does(job) {
+			continue
+		}
+		pool.entries = append(pool.entries, &entry{route: value})
+	}
+	return pool
+}
+
 // Empty reports whether the pool holds no routes at all, which is a
 // configuration problem and not a transport one.
 func (p *Pool) Empty() bool {

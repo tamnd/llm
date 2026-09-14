@@ -139,11 +139,40 @@ type Route struct {
 	// the scarce thing. So the route file says, a route that does not declare
 	// vision is never sent an image, and a caller asking a registry with none
 	// for a vision route gets a sentence rather than a 404 an hour into a run.
-	Vision   bool `json:"vision,omitempty"`
-	Disabled bool `json:"disabled,omitempty"`
+	Vision bool `json:"vision,omitempty"`
+	// Jobs names the kinds of work this route may be sent. Empty means any
+	// of them, which is the right default: most fleets run one general
+	// model everywhere and having to enumerate the jobs would be a list
+	// that goes stale the first time a caller grows a new one.
+	//
+	// The names are the caller's and this package only matches them. What
+	// it is for is the route whose model is excellent at one job and
+	// useless at another, which is not a thing a slug can be read for. A
+	// local OCR model at rank 5 wins every pick, including the picks it
+	// should lose: asked to translate a paragraph it answered in a
+	// confident mix of Vietnamese and Russian, and nothing downstream of
+	// the answer could tell that from a bad day. Declaring jobs="extract"
+	// on that route is one line and it is checkable, where "do not let the
+	// reader translate" is neither.
+	Jobs     []string `json:"jobs,omitempty"`
+	Disabled bool     `json:"disabled,omitempty"`
 	// Note carries why a route is ranked or disabled where it is. A disabled
 	// row with no explanation reads as an oversight.
 	Note string `json:"note,omitempty"`
+}
+
+// Does reports whether this route may be sent a job of that name. A route
+// that names no jobs does all of them.
+func (r Route) Does(job string) bool {
+	if len(r.Jobs) == 0 {
+		return true
+	}
+	for _, j := range r.Jobs {
+		if strings.EqualFold(strings.TrimSpace(j), job) {
+			return true
+		}
+	}
+	return false
 }
 
 // Duration is a time.Duration that round trips through JSON as "20m" rather
