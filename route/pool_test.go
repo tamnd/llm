@@ -377,6 +377,46 @@ func TestVisionPoolTakesOnlyTheRoutesThatSee(t *testing.T) {
 	}
 }
 
+// A route that names no jobs does all of them, because most fleets run one
+// general model everywhere and a list that has to be complete goes stale the
+// first time a caller grows a new job.
+func TestAJobPoolTakesTheRoutesThatNameTheJobAndTheOnesThatNameNone(t *testing.T) {
+	reader := gateway("reader", 1)
+	reader.Jobs = []string{"extract"}
+	writer := gateway("writer", 2)
+	writer.Jobs = []string{"translate", "judge"}
+	for _, c := range []struct {
+		job  string
+		want []string
+	}{
+		{"extract", []string{"reader", "anything"}},
+		{"translate", []string{"writer", "anything"}},
+		{"summarise", []string{"anything"}},
+	} {
+		pool := NewJobPool(Registry{Routes: []Route{reader, writer, gateway("anything", 3)}}, c.job)
+		var got []string
+		for _, r := range pool.Routes() {
+			got = append(got, r.Name)
+		}
+		if strings.Join(got, ",") != strings.Join(c.want, ",") {
+			t.Errorf("%s pool = %v, want %v", c.job, got, c.want)
+		}
+	}
+}
+
+// The name is matched the way somebody types it into a route file by hand.
+func TestDoesIgnoresCaseAndSurroundingSpace(t *testing.T) {
+	r := Route{Jobs: []string{" Extract ", "translate"}}
+	for _, job := range []string{"extract", "translate"} {
+		if !r.Does(job) {
+			t.Errorf("a route that names %q does not do it", job)
+		}
+	}
+	if r.Does("render") {
+		t.Error("a route that names two jobs does a third")
+	}
+}
+
 // An exec route has no HTTP transport. Without a builder the pool must say so
 // plainly rather than fail at the first call with something obscure.
 func TestExecRouteNeedsABuilder(t *testing.T) {
