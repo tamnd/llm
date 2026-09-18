@@ -176,8 +176,9 @@ func (s *Supervisor) launch(link Link) (Process, error) {
 	}
 	cmd := exec.Command(binary, tunnelArgs(link)...)
 	// Its own process group, so it outlives the command that started it and so
-	// a stray Ctrl-C in the terminal does not take the fleet down with it.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// a stray Ctrl-C in the terminal does not take the fleet down with it. What
+	// that means on Windows is in process_windows.go, which is less than this.
+	ownGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -218,7 +219,7 @@ func (p *sshProcess) PID() int { return p.cmd.Process.Pid }
 func (p *sshProcess) Kill() error {
 	// The whole group: ssh may have children, and killing only the leader
 	// leaves the forward held open by something with no parent.
-	if err := syscall.Kill(-p.cmd.Process.Pid, syscall.SIGTERM); err != nil {
+	if err := killGroup(p.cmd.Process.Pid); err != nil {
 		return p.cmd.Process.Kill()
 	}
 	return nil
@@ -373,7 +374,7 @@ func Kill(pid int) error {
 	if pid <= 0 {
 		return fmt.Errorf("no pid")
 	}
-	if err := syscall.Kill(-pid, syscall.SIGTERM); err == nil {
+	if err := killGroup(pid); err == nil {
 		return nil
 	}
 	process, err := os.FindProcess(pid)
