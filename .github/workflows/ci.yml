@@ -50,6 +50,45 @@ jobs:
       - name: build
         run: go build -trimpath ./...
 
+  # Every platform the library claims to build on, built. The tests run on
+  # Linux only, because what this catches is not a test failure: it is a
+  # package that does not compile at all somewhere, and a package that does not
+  # compile makes every package importing it not compile either. fleet had
+  # exactly that bug against Windows and it surfaced in another repository's CI
+  # rather than in this one.
+  cross:
+    name: cross build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+      - name: build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build ./...
+      - name: vet
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go vet ./...
+
   # This library has no dependencies and is meant to stay that way. A single
   # require line is a change worth noticing in a diff rather than in a year.
   no-dependencies:
